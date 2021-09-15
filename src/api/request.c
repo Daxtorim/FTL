@@ -115,6 +115,13 @@ void process_request(const char *client_message, int *sock)
 		// is guaranteed to be atomic
 		getDBstats(sock);
 	}
+	else if(command(client_message, ">ResponseOverTime"))
+	{
+		processed = true;
+		lock_shm();
+		getResponseOverTime(sock);
+		unlock_shm();
+	}
 	else if(command(client_message, ">ClientsoverTime"))
 	{
 		processed = true;

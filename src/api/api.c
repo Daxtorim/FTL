@@ -71,6 +71,20 @@ static int __attribute__((pure)) cmpdesc(const void *a, const void *b)
 		return 0;
 }
 
+static int __attribute__((pure)) cmpdesc_unsigned_long(const void *a, const void *b)
+{
+	const unsigned long ai = *(const unsigned long*)a;
+	const unsigned long bi = *(const unsigned long*)b;
+
+	if (ai < bi)
+		return 1;
+
+	if (ai > bi)
+		return -1;
+
+	return 0;
+}
+
 void getStats(const int *sock)
 {
 	const int blocked = blocked_queries();
@@ -1190,6 +1204,189 @@ void getDBstats(const int *sock)
 			return;
 	}
 }
+
+
+void getResponseOverTime(const int *sock)
+{
+	// find largest slot to initialize array with later
+	int largest_timeslot = 0;
+	int last_overall_slot = OVERTIME_SLOTS;
+	for(int slot = 0; slot < OVERTIME_SLOTS; slot++)
+	{
+		if(overTime[slot].timestamp >= time(NULL))
+		{
+			last_overall_slot = slot;
+			break;
+		}
+
+		int timed_queries = overTime[slot].forwarded;
+		if(timed_queries > largest_timeslot)
+			largest_timeslot = timed_queries;
+	}
+	// initialize array to zeros
+	// given the amount of queries that will be filtered out, this is almost always way to large
+	// but I don't know how to get a better size approximation without looping over all queries *twice*
+	unsigned long responses[largest_timeslot];
+	memset(responses, 0, largest_timeslot * sizeof(*responses));
+
+	// keep track of counters
+	int timeID_prev = 0;
+	int response_counter = 0;
+
+	// loop over all queries and group their response times by overTimeID
+	for(int queryID = 0; queryID <= counters->queries; queryID++)
+	{
+		int timeID = 0;
+		unsigned long response_time = 0;
+
+		const queriesData* query = getQuery(queryID, true);
+		if(queryID != counters->queries){
+
+			// filter out queries that don't exist or otherwise have no meaningful response time
+			if(query == NULL
+			|| query->status != QUERY_FORWARDED
+			|| query->reply == (REPLY_UNKNOWN || REPLY_SERVFAIL || REPLY_REFUSED || REPLY_NOTIMP || REPLY_OTHER || REPLY_NONE))
+				continue;
+
+			timeID = getOverTimeID(query->timestamp);
+			response_time = query->response;
+
+			if(timeID <= timeID_prev){
+				// filter out garbage, add response to array and continue early
+				if(response_time < 30*60*1000*10)
+					responses[response_counter++] = response_time;
+
+				continue;
+			}
+		}
+
+		// timeID of query was larger, or this is the last loop interation
+		// calculate medians of previous timeslot now
+		if(response_counter > 0)
+		{
+			qsort(responses, largest_timeslot, sizeof(*responses), cmpdesc_unsigned_long);
+
+			// response_counter is index of last set value +1 due to post-inc
+			// array was sorted in desc order, 75% value comes first
+			float median75_index = (response_counter - 1) * 0.25f;
+			float median50_index = (response_counter - 1) * 0.50f;
+			float median25_index = (response_counter - 1) * 0.75f;
+
+			unsigned long median25_value = 0;
+			unsigned long median50_value = 0;
+			unsigned long median75_value = 0;
+
+			// floating point shenanigans; just checking if medianXX_index would be an integer
+			// the +0.01f makes sure it won't be a "2.9999999993 turns into 2" type of deal
+			if((median50_index + 0.01f) - (int)(median50_index + 0.01f) < 0.02f)
+			{
+				median50_value = responses[(int)(median50_index + 0.01f)];
+			}
+			else
+			{
+				// index not an integer, calculate average of surrounding values
+				int idx = (int)(median50_index);
+				median50_value = (responses[idx] + responses[idx + 1]) / 2;
+			}
+
+			if(response_counter > 3)
+			{
+				if((median25_index + 0.01f) - (int)(median25_index + 0.01f) < 0.02f)
+				{
+					median25_value = responses[(int)(median25_index + 0.01f)];
+				}
+				else
+				{
+					int idx = (int)(median25_index);
+					median25_value = (responses[idx] + responses[idx + 1]) / 2;
+				}
+
+				if((median75_index + 0.01f) - (int)(median75_index + 0.01f) < 0.02f)
+				{
+					median75_value = responses[(int)(median75_index + 0.01f)];
+				}
+				else
+				{
+					int idx = (int)(median75_index);
+					median75_value = (responses[idx] + responses[idx + 1]) / 2;
+				}
+			}
+			else
+			{
+				// make all values equal so the graph on the dashboard won't look all funky
+				median25_value = median50_value;
+				median75_value = median50_value;
+			}
+
+			if(istelnet[*sock])
+			{
+				ssend(*sock, "%lli %i %lu %lu %lu %lu\n",
+					(long long)overTime[timeID_prev].timestamp,
+					response_counter,
+					median25_value,
+					median50_value,
+					median75_value,
+					responses[0]
+				);
+			}
+			else
+			{
+				pack_int32(*sock, (int32_t)overTime[timeID_prev].timestamp);
+				pack_int32(*sock, (int32_t)response_counter);
+				pack_int32(*sock, (int32_t)median25_value);
+				pack_int32(*sock, (int32_t)median50_value);
+				pack_int32(*sock, (int32_t)median75_value);
+				pack_int32(*sock, (int32_t)responses[0]);
+				pack_int32(*sock, -1);
+			}
+
+			// fill up empty slots inbetween previous and current timeslot
+			int last_empty_slot;
+			if(queryID == counters->queries)
+			{
+				last_empty_slot = last_overall_slot;
+			}
+			else
+			{
+				last_empty_slot = timeID;
+			}
+
+			for(int slot = timeID_prev + 1; slot < last_empty_slot; slot++)
+			{
+				if(istelnet[*sock])
+				{
+					// cast zeros to unsigned long for type consistency with non-empty return values above
+					ssend(*sock, "%lli %i %lu %lu %lu %lu\n",(long long)overTime[slot].timestamp,
+						0,
+						(unsigned long)0,
+						(unsigned long)0,
+						(unsigned long)0,
+						(unsigned long)0);
+				}
+				else
+				{
+					pack_int32(*sock, (int32_t)overTime[timeID_prev].timestamp);
+					pack_int32(*sock, 0);
+					pack_int32(*sock, 0);
+					pack_int32(*sock, 0);
+					pack_int32(*sock, 0);
+					pack_int32(*sock, 0);
+					pack_int32(*sock, -1);
+				}
+			}
+		}
+
+		if(queryID != counters->queries)
+		{
+			memset(responses, 0, largest_timeslot * sizeof(*responses));
+			response_counter = 0;
+			if(response_time < 30*60*1000*10)
+				responses[response_counter++] = response_time;
+			timeID_prev = timeID;
+		}
+	}
+}
+
 
 void getClientsOverTime(const int *sock)
 {
