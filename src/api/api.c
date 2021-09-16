@@ -1229,7 +1229,6 @@ void getResponseOverTime(const int *sock)
 	unsigned long responses[largest_timeslot];
 	memset(responses, 0, largest_timeslot * sizeof(*responses));
 
-	// keep track of counters
 	int timeID_prev = 0;
 	int response_counter = 0;
 
@@ -1253,7 +1252,7 @@ void getResponseOverTime(const int *sock)
 
 			if(timeID <= timeID_prev){
 				// filter out garbage, add response to array and continue early
-				if(response_time < 30*60*1000*10)
+				if(50 < response_time && response_time < 30*60*1000*10)
 					responses[response_counter++] = response_time;
 
 				continue;
@@ -1262,8 +1261,13 @@ void getResponseOverTime(const int *sock)
 
 		// timeID of query was larger, or this is the last loop interation
 		// calculate medians of previous timeslot now
+		unsigned long median25_value = 0;
+		unsigned long median50_value = 0;
+		unsigned long median75_value = 0;
+
 		if(response_counter > 0)
 		{
+			// No need to sort outside since then it would be all zeros anyway
 			qsort(responses, largest_timeslot, sizeof(*responses), cmpdesc_unsigned_long);
 
 			// response_counter is index of last set value +1 due to post-inc
@@ -1271,10 +1275,6 @@ void getResponseOverTime(const int *sock)
 			float median75_index = (response_counter - 1) * 0.25f;
 			float median50_index = (response_counter - 1) * 0.50f;
 			float median25_index = (response_counter - 1) * 0.75f;
-
-			unsigned long median25_value = 0;
-			unsigned long median50_value = 0;
-			unsigned long median75_value = 0;
 
 			// floating point shenanigans; just checking if medianXX_index would be an integer
 			// the +0.01f makes sure it won't be a "2.9999999993 turns into 2" type of deal
@@ -1317,62 +1317,63 @@ void getResponseOverTime(const int *sock)
 				median25_value = median50_value;
 				median75_value = median50_value;
 			}
+		}
 
+		if(istelnet[*sock])
+		{
+			ssend(*sock, "%lli %i %lu %lu %lu %lu\n",
+				(long long)overTime[timeID_prev].timestamp,
+				response_counter,
+				median25_value,
+				median50_value,
+				median75_value,
+				responses[0]
+			);
+		}
+		else
+		{
+			pack_int32(*sock, (int32_t)overTime[timeID_prev].timestamp);
+			pack_int32(*sock, (int32_t)response_counter);
+			pack_int32(*sock, (int32_t)median25_value);
+			pack_int32(*sock, (int32_t)median50_value);
+			pack_int32(*sock, (int32_t)median75_value);
+			pack_int32(*sock, (int32_t)responses[0]);
+			pack_int32(*sock, -1);
+		}
+
+		// fill up empty slots inbetween previous and current timeslot
+		int last_empty_slot;
+		if(queryID == counters->queries)
+		{
+			last_empty_slot = last_overall_slot;
+		}
+		else
+		{
+			last_empty_slot = timeID;
+		}
+
+		for(int slot = timeID_prev + 1; slot < last_empty_slot; slot++)
+		{
 			if(istelnet[*sock])
 			{
-				ssend(*sock, "%lli %i %lu %lu %lu %lu\n",
-					(long long)overTime[timeID_prev].timestamp,
-					response_counter,
-					median25_value,
-					median50_value,
-					median75_value,
-					responses[0]
+				// cast zeros to unsigned long for type consistency with non-empty return values above (useful/necessary???)
+				ssend(*sock, "%lli %i %lu %lu %lu %lu\n",(long long)overTime[slot].timestamp,
+					0,
+					(unsigned long)0,
+					(unsigned long)0,
+					(unsigned long)0,
+					(unsigned long)0
 				);
 			}
 			else
 			{
-				pack_int32(*sock, (int32_t)overTime[timeID_prev].timestamp);
-				pack_int32(*sock, (int32_t)response_counter);
-				pack_int32(*sock, (int32_t)median25_value);
-				pack_int32(*sock, (int32_t)median50_value);
-				pack_int32(*sock, (int32_t)median75_value);
-				pack_int32(*sock, (int32_t)responses[0]);
+				pack_int32(*sock, (int32_t)overTime[slot].timestamp);
+				pack_int32(*sock, 0);
+				pack_int32(*sock, 0);
+				pack_int32(*sock, 0);
+				pack_int32(*sock, 0);
+				pack_int32(*sock, 0);
 				pack_int32(*sock, -1);
-			}
-
-			// fill up empty slots inbetween previous and current timeslot
-			int last_empty_slot;
-			if(queryID == counters->queries)
-			{
-				last_empty_slot = last_overall_slot;
-			}
-			else
-			{
-				last_empty_slot = timeID;
-			}
-
-			for(int slot = timeID_prev + 1; slot < last_empty_slot; slot++)
-			{
-				if(istelnet[*sock])
-				{
-					// cast zeros to unsigned long for type consistency with non-empty return values above
-					ssend(*sock, "%lli %i %lu %lu %lu %lu\n",(long long)overTime[slot].timestamp,
-						0,
-						(unsigned long)0,
-						(unsigned long)0,
-						(unsigned long)0,
-						(unsigned long)0);
-				}
-				else
-				{
-					pack_int32(*sock, (int32_t)overTime[timeID_prev].timestamp);
-					pack_int32(*sock, 0);
-					pack_int32(*sock, 0);
-					pack_int32(*sock, 0);
-					pack_int32(*sock, 0);
-					pack_int32(*sock, 0);
-					pack_int32(*sock, -1);
-				}
 			}
 		}
 
@@ -1380,7 +1381,7 @@ void getResponseOverTime(const int *sock)
 		{
 			memset(responses, 0, largest_timeslot * sizeof(*responses));
 			response_counter = 0;
-			if(response_time < 30*60*1000*10)
+			if(50 < response_time && response_time < 30*60*1000*10)
 				responses[response_counter++] = response_time;
 			timeID_prev = timeID;
 		}
