@@ -1210,12 +1210,12 @@ void getResponseOverTime(const int *sock)
 {
 	// find largest slot to initialize array with later
 	int largest_timeslot = 0;
-	int last_overall_slot = OVERTIME_SLOTS;
+	int until = OVERTIME_SLOTS;
 	for(int slot = 0; slot < OVERTIME_SLOTS; slot++)
 	{
 		if(overTime[slot].timestamp >= time(NULL))
 		{
-			last_overall_slot = slot;
+			until = slot;
 			break;
 		}
 
@@ -1319,33 +1319,37 @@ void getResponseOverTime(const int *sock)
 			}
 		}
 
-		if(istelnet[*sock])
+		// do not send data for truly last slot just like the other overTime functions
+		if(timeID_prev < until)
 		{
-			ssend(*sock, "%lli %i %lu %lu %lu %lu\n",
-				(long long)overTime[timeID_prev].timestamp,
-				response_counter,
-				median25_value,
-				median50_value,
-				median75_value,
-				responses[0]
-			);
-		}
-		else
-		{
-			pack_int32(*sock, (int32_t)overTime[timeID_prev].timestamp);
-			pack_int32(*sock, (int32_t)response_counter);
-			pack_int32(*sock, (int32_t)median25_value);
-			pack_int32(*sock, (int32_t)median50_value);
-			pack_int32(*sock, (int32_t)median75_value);
-			pack_int32(*sock, (int32_t)responses[0]);
-			pack_int32(*sock, -1);
+			if(istelnet[*sock])
+			{
+				ssend(*sock, "%lli %i %lu %lu %lu %lu\n",
+					(long long)overTime[timeID_prev].timestamp,
+					response_counter,
+					median25_value,
+					median50_value,
+					median75_value,
+					responses[0]
+				);
+			}
+			else
+			{
+				pack_int32(*sock, (int32_t)overTime[timeID_prev].timestamp);
+				pack_int32(*sock, (int32_t)response_counter);
+				pack_int32(*sock, (int32_t)median25_value);
+				pack_int32(*sock, (int32_t)median50_value);
+				pack_int32(*sock, (int32_t)median75_value);
+				pack_int32(*sock, (int32_t)responses[0]);
+				pack_int32(*sock, -1);
+			}
 		}
 
 		// fill up empty slots inbetween previous and current timeslot
 		int last_empty_slot;
 		if(queryID == counters->queries)
 		{
-			last_empty_slot = last_overall_slot;
+			last_empty_slot = until;
 		}
 		else
 		{
